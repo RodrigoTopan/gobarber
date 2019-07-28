@@ -1,10 +1,13 @@
 import * as Yup from 'yup'
-import { startOfHour, parseISO, isBefore, format } from 'date-fns'
+import { startOfHour, parseISO, isBefore, format, subHours } from 'date-fns'
 import pt from 'date-fns/locale/pt'
 import Appointment from '../models/Appointment';
 import User from '../models/User';
 import File from '../models/File';
 import Notification from '../schemas/Notification';
+
+import CancellationMail from '../jobs/cancellationMail' 
+import Queue from '../../lib/Queue'
 
 
 class AppointmentController {
@@ -127,6 +130,55 @@ class AppointmentController {
 
 
         return res.status(200).json({ appointment, notification })
+    }
+
+    async delete(req,res){
+        try{
+            const appointment = await Appointment.findByPk(req.params.id, {
+                include: [
+                    {
+                        model: User,
+                        as: 'provider',
+                        attributes: ['name', 'email']
+                    },
+                    {
+                        model: User,
+                        as: 'user',
+                        attributes: ['name']
+                    }
+                ]
+            })
+
+            if(!appointment && appointment.user_id !== req.userId){
+                return res.status(401).json({
+                    error: "You don't have permission to cancel this appointment."
+                })
+            }
+
+            /**
+             * Verify if the cancel request is two hours before now
+             */
+            const dateWithSub = subHours(appointment.date, 2)
+
+            if(isBefore(dateWithSub, new Date())){
+                return res.status(401).json({
+                    error: 'You can only cancel appointments two hours in advance.'
+                })
+            }
+
+            appointment.canceled_at = new Date()
+
+            await appointment.save()
+            
+            
+            await Queue.add(CancellationMail.key, {
+                appointment
+            })
+
+            return res.status(200).json(appointment)
+        }catch(error){
+            console.log(error.message)
+        }
     }
 }
 export default new AppointmentController()
